@@ -1,0 +1,268 @@
+import Sofa
+import Sofa.Core
+import Sofa.Simulation as sim
+import sys
+import os
+path = os.path.dirname(os.path.abspath(__file__))+'/mesh/'
+resultPath = os.path.dirname(os.path.abspath(__file__)) + '/'
+import matplotlib.pyplot as plt
+import numpy as np
+from sys import argv
+import time
+from math import cos, sin, pi
+from SofaOffscreenCamera import OffscreenCamera
+import pathlib
+
+        
+# Choose in your script to activate or not the GUI
+USE_GUI = False
+
+print("CURRENT PATH IS: "+os.getcwd())
+
+
+# Scene creation - This is automatically called by SofaPython3 when using runSofa     
+def createScene(rootNode):
+    print("This is the axial load Ellipse cylinder simulation")
+    rootNode.addObject('RequiredPlugin', pluginName='SoftRobots SofaPython3 SofaSparseSolver SofaOpenglVisual SofaExporter SofaConstraint SofaDeformable SofaEngine SofaImplicitOdeSolver SofaLoader SofaSimpleFem SofaBoundaryCondition SofaValidation SofaOffscreenCamera')
+    rootNode.addObject('VisualStyle', displayFlags='showVisualModels hideBehaviorModels showCollisionModels hideBoundingCollisionModels hideForceFields showInteractionForceFields hideWireframe')
+    rootNode.addObject("LightManager")
+    rootNode.addObject("InteractiveCamera", name="camera", position=[0,10, 0], lookAt=[0,0,0], distance=37, fieldOfView=45, zNear=0.63, zFar=55.69)    
+    rootNode.addObject("SpotLight", position=[0,0,0], cutoff= 1, exponent = 1, drawSource="True")
+    #e.addObject("SpotLight", position=[3,3,500], cutoff= 50, exponent = 1, drawSource="True")
+    #e.addObject("PositionalLight", color = [0,1,0], position=[0.5,0.7,100], attenuation = 0.1)
+    
+    rootNode.addObject('FreeMotionAnimationLoop')
+    # Add a QPInverseProblemSolver to the scene if you need to solve inverse problem like the one that involved
+    # when manipulating the robots by specifying their effector's position instead of by direct control
+    # of the actuator's parameters.
+    #rootNode.addObject('QPInverseProblemSolver', printLog=False)
+    # Otherwise use a GenericConstraintSolver
+ 
+    rootNode.addObject('GenericConstraintSolver', tolerance=1e-6, maxIterations=200)
+
+    rootNode.gravity = [0.0, 0.0, 0.0] #[0.0, -9810, 0.0] # Applied gravitational force in y axis 
+    rootNode.dt = 0.1 # Timestep 100 ms - make sure the gravity force is also compatible 
+    rootNode.addObject('BackgroundSetting', color=[0, 0.168627, 0.211765, 1])
+    # RGB Red => First (x axis), Green => Second (y axis), Blue => Third (z axis)
+    rootNode.addObject('OglSceneFrame', style="Arrows", alignment="TopRight")
+    #rootNode.addObject(TimerController())
+    
+    
+    e = rootNode.addChild("Ellipse")
+    
+    # Time integration scheme
+    e.addObject('EulerImplicitSolver', name='odesolver', firstOrder=False, rayleighMass=0.1, rayleighStiffness=0.1)
+    
+    # Solving method
+    e.addObject('SparseLDLSolver', name='preconditioner')
+    
+    # Add a componant to load a VTK tetrahedral mesh and expose the resulting topology in the scene .
+    e.addObject('MeshVTKLoader', name='loader', filename= path + 'Ellipse_cylinder.vtk') # the mesh unit is mm
+    e.addObject('MeshTopology', src='@loader', name='container')
+    e.addObject('TetrahedronSetTopologyModifier')
+
+    # Create a mechanical object component to stores the DoFs of the model
+    e.addObject('MechanicalObject', name='tetras', template='Vec3', showIndices=False, showIndicesScale=4e-5) # Choose template='Vec3' for beam simulation
+    e.addObject('VolumeFromTetrahedrons')
+
+
+    # Gives a mass to the model
+    e.addObject('UniformMass', totalMass=0.0036) # change mass accordingly 3.6g
+
+    # Add a TetrahedronFEMForceField componant which implement an elastic material model solved using the Finite Element Method on
+    # tetrahedrons.
+    e.addObject('TetrahedronFEMForceField', template='Vec3', name='FEM', method='large', poissonRatio=0.48,  youngModulus=12) # Choose template='Vec3' for beam simulation, 3d printer ninjaflex material
+
+    # To facilitate the selection of DoFs, SOFA has a concept called ROI (Region of Interest).
+    # The idea is that ROI component "select" all DoFS that are enclosed by their "region".
+    # We use ROI here to select a group of finger's DoFs that will be constrained to stay
+    # at a fixed position.
+    # You can either use 'BoxROI'...
+    e.addObject('BoxROI', name='roi1', box=[-10, 5, 5, 10, -5, 15], drawBoxes=True)
+    e.addObject('BoxROI', name='roi2', box=[-10, 5, 85, 10, -5, 75], drawBoxes=True)
+    e.addObject('BoxROI', name='roi3', box=[-10, 5, 60, 10, -5, 30], drawBoxes=True)
+    # Or 'SphereROI'...
+    #finger.addObject('SphereROI', name='roi', centers=[0, 0, 0], radii=5)
+
+    # RestShapeSpringsForceField is one way in Sofa to implement fixed point constraint.
+    # Here the constraints are applied to the DoFs selected by the previously defined BoxROI
+    e.addObject('RestShapeSpringsForceField', points=e.roi1.indices.getLinkPath(), stiffness=1e12)
+    e.addObject('PartialFixedConstraint', indices= '@roi2.indices', fixedDirections = [1, 1, 0])
+    e.addObject('ConstantForceField', name = 'CFF', indices = '@roi2.indices', totalForce = [0.0, 0.0, 0.0], showArrowSize = '0.5') # Here apply 100N
+    forcePointer = e.CFF.totalForce
+    forcePointer.value = [float(argv[1]), float(argv[2]), float(argv[3])] # Casting string arguments to float
+    print("x,y,z forces:", argv[1], argv[2], argv[3])
+    
+    # It is also possible to simply set by hand the indices of the points you want to fix.
+    #finger.addObject('RestShapeSpringsForceField', points=[0, 1, 2, 11, 55], stiffness=1e12)
+    e.addObject('GenericConstraintCorrection')
+    
+    # Collision model for morphels
+    # 
+
+    ##########################################
+    # Visualization                          #
+    ##########################################
+    # In Sofa, visualization is handled by adding a rendering model.
+    # Create an empty child node to store this rendering model.
+    ellipseVisual = e.addChild('visual')
+
+    # Add to this empty node a rendering model made of triangles and loaded from an stl file.
+    ellipseVisual.addObject('MeshSTLLoader', filename= path + 'Ellipse_cylinder_tas.stl', name="loader")
+    ellipseVisual.addObject('OglModel', src="@loader", color=[1,0.0,0.0])             #[0.0, 0.7, 0.7, 1])
+
+    # Add a BarycentricMapping to deform the rendering model in a way that follow the ones of the parent mechanical model.
+    ellipseVisual.addObject('BarycentricMapping') # use when its a deformable model
+    
+    # Add offscreen camera
+    e.addObject('VisualStyle', displayFlags='showVisualModels')
+    e.addObject('OffscreenCamera',
+                        name='camera_offscreen',
+                        filepath='%s_%i.png',
+                        widthViewport=3840,
+                        heightViewport=2160,
+                        save_frame_before_first_step=True,
+                        save_frame_after_each_n_steps=1,
+                        position=[130, 30, 130], lookAt=[0, 0, 50], zNear=2, zFar=200, computeZClip=False, projectionType=1)  
+                       
+    
+    ##########################################
+    # Simulation results                     #
+    ##########################################
+    if argv[4] == 'f1':
+      e.addObject('ExtraMonitor', template = 'Vec3', name = 'Simulation_results_ellipse_axial_load_force1', listening = '1', indices = '@roi3.indices', showPositions = '0', PositionsColor = [1, 1, 0, 1], showTrajectories = 'true', TrajectoriesColor = [1, 0, 1, 1], showForces = 'false', ForcesColor =[1, 0, 0, 1], sizeFactor = '0.5', ExportForces = 'true',resultantF = 'true')
+      e.addObject('Monitor', template = 'Vec3', name = 'Simulation_results_ellipse_axial_load_position1', listening = '1', indices = '@roi3.indices', showPositions = '0', PositionsColor = [1, 1, 0, 1], showTrajectories = 'true', TrajectoriesColor = [1, 0, 1, 1], showForces = 'false', ForcesColor =[1, 0, 0, 1], sizeFactor = '0.5', ExportPositions = 'true')
+    elif argv[4] == 'f2':  
+      e.addObject('ExtraMonitor', template = 'Vec3', name = 'Simulation_results_ellipse_axial_load_force2', listening = '1', indices = '@roi3.indices', showPositions = '0', PositionsColor = [1, 1, 0, 1], showTrajectories = 'true', TrajectoriesColor = [1, 0, 1, 1], showForces = 'false', ForcesColor =[1, 0, 0, 1], sizeFactor = '0.5', ExportForces = 'true',resultantF = 'true')
+      e.addObject('Monitor', template = 'Vec3', name = 'Simulation_results_ellipse_axial_load_position2', listening = '1', indices = '@roi3.indices', showPositions = '0', PositionsColor = [1, 1, 0, 1], showTrajectories = 'true', TrajectoriesColor = [1, 0, 1, 1], showForces = 'false', ForcesColor =[1, 0, 0, 1], sizeFactor = '0.5', ExportPositions = 'true')
+    elif argv[4] == 'f3':   
+      e.addObject('ExtraMonitor', template = 'Vec3', name = 'Simulation_results_ellipse_axial_load_force3', listening = '1', indices = '@roi3.indices', showPositions = '0', PositionsColor = [1, 1, 0, 1], showTrajectories = 'true', TrajectoriesColor = [1, 0, 1, 1], showForces = 'false', ForcesColor =[1, 0, 0, 1], sizeFactor = '0.5', ExportForces = 'true',resultantF = 'true')
+      e.addObject('Monitor', template = 'Vec3', name = 'Simulation_results_ellipse_axial_load_position3', listening = '1', indices = '@roi3.indices', showPositions = '0', PositionsColor = [1, 1, 0, 1], showTrajectories = 'true', TrajectoriesColor = [1, 0, 1, 1], showForces = 'false', ForcesColor =[1, 0, 0, 1], sizeFactor = '0.5', ExportPositions = 'true')
+    elif argv[4] == 'f4': 
+      e.addObject('ExtraMonitor', template = 'Vec3', name = 'Simulation_results_ellipse_axial_load_force4', listening = '1', indices = '@roi3.indices', showPositions = '0', PositionsColor = [1, 1, 0, 1], showTrajectories = 'true', TrajectoriesColor = [1, 0, 1, 1], showForces = 'false', ForcesColor =[1, 0, 0, 1], sizeFactor = '0.5', ExportForces = 'true',resultantF = 'true')
+      e.addObject('Monitor', template = 'Vec3', name = 'Simulation_results_ellipse_axial_load_position4', listening = '1', indices = '@roi3.indices', showPositions = '0', PositionsColor = [1, 1, 0, 1], showTrajectories = 'true', TrajectoriesColor = [1, 0, 1, 1], showForces = 'false', ForcesColor =[1, 0, 0, 1], sizeFactor = '0.5', ExportPositions = 'true')
+    else:
+      print("There is no data to export") 
+    # can also use VTKExporter to extract data.
+    #e.addObject('VTKExporter', name = 'Simulation_data', filename = 'Ellipse_axial_load_data', position = '@MechanicalObject.position', pointsDataFields = '@MechanicalObject.velocity', exportAtEnd ='1')
+    
+    
+    return rootNode
+
+    
+    ###########################################
+    # Plotting data                           #
+    ###########################################
+def my_plotter(): 
+    
+    if argv[4] == 'f1':
+      data = np.loadtxt(resultPath + 'Simulation_results_ellipse_axial_load_force1_f.txt')
+      data2 = np.loadtxt(resultPath + 'Simulation_results_ellipse_axial_load_position1_x.txt')
+    elif argv[4] == 'f2':   
+      data = np.loadtxt(resultPath + 'Simulation_results_ellipse_axial_load_force2_f.txt')
+      data2 = np.loadtxt(resultPath + 'Simulation_results_ellipse_axial_load_position2_x.txt')
+    elif argv[4] == 'f3':  
+      data = np.loadtxt(resultPath + 'Simulation_results_ellipse_axial_load_force3_f.txt')
+      data2 = np.loadtxt(resultPath + 'Simulation_results_ellipse_axial_load_position3_x.txt')
+    elif argv[4] == 'f4':  
+     data = np.loadtxt(resultPath + 'Simulation_results_ellipse_axial_load_force4_f.txt')
+     data2 = np.loadtxt(resultPath + 'Simulation_results_ellipse_axial_load_position4_x.txt')
+    else:
+     print("There is no data to load") 
+          
+    plt.figure(1)
+    plt.subplot(211) 
+    x = data[:,0]
+    y = data[:,3]    
+    plt.plot(x, y,'r--')
+    plt.ylabel('Force(N)')
+    
+    plt.subplot(212) 
+    x2 = data2[:,0]
+    y2 = data2[:,3]
+    plt.plot(x2, y2,'r--')
+    plt.xlabel('Time(s)')
+    plt.ylabel('Position')
+    #plt.show()
+    if argv[4] == 'f1':
+      plt.savefig('Ellipse_axial_load_1.png')
+    elif argv[4] == 'f2':
+      plt.savefig('Ellipse_axial_load_2.png')  
+    elif argv[4] == 'f3':  
+      plt.savefig('Ellipse_axial_load_3.png')
+    elif argv[4] == 'f4': 
+      plt.savefig('Ellipse_axial_load_4.png') 
+    else:
+      print("There is nothing to plot")  
+
+# save a screenshot from the position of where we set the camera above
+def record_frame(filename):
+    Sofa.Gui.GUIManager.SaveScreenshot(filename)
+
+
+      
+def main():
+    import Sofa.Gui
+    import SofaRuntime
+    print("Number of arguments:", len(sys.argv), "arguments.")
+    print("Argument List:", str(sys.argv))
+    # Create output directories if they don't exist
+    cwd = pathlib.Path().absolute()
+    Ellipse_simulation_directory = os.path.join(cwd, "Ellipse Simulation")
+    print(f"Screenshots will be saved in \n\t{Ellipse_simulation_directory}")
+    pathlib.Path(Ellipse_simulation_directory).mkdir(parents=True, exist_ok=True)
+    SofaRuntime.importPlugin("SoftRobots")
+    root=Sofa.Core.Node("root")
+    createScene(root)
+    
+    # Get our camera
+    camera_1 = root.Ellipse.camera_offscreen
+    # Use a perspective projection
+    camera_1.projectionType = 1
+    # Turn of automatic screenshot since we will do it manually here
+    camera_1.save_frame_before_first_step = False
+    camera_1.save_frame_after_each_n_steps = 0
+
+    
+    
+    # Initialize the scene and the visual    
+    Sofa.Simulation.init(root)
+    Sofa.Simulation.initTextures(root)
+    
+    # Save screenshot at time 0
+    camera_1.save_frame(os.path.join(Ellipse_simulation_directory, 'frame_0.jpg'))
+    # Run the simulation for 48 steps    
+    if not USE_GUI:
+        for iteration in range(48):
+            print(f'Iteration #{iteration}')
+            Sofa.Simulation.animate(root, root.dt.value)
+            Sofa.Simulation.updateVisual(root)
+            # Save screenshot at time i+1
+            camera_1.save_frame(os.path.join(Ellipse_simulation_directory, f'frame_{iteration+1}.jpg'))
+                         
+    else:
+        '''Sofa.Simulation.init(root)
+        Sofa.Gui.GUIManager.Init("myscene", "qglviewer")
+        Sofa.Gui.GUIManager.createGUI(root, __file__)
+        Sofa.Gui.GUIManager.SetDimension(1080, 1080)'''
+        for iteration in range(48):
+            print(f'Iteration #{iteration}')
+            Sofa.Simulation.animate(root, root.dt.value)
+            Sofa.Simulation.updateVisual(root)
+            # Save screenshot at time i+1
+            camera_1.save_frame(os.path.join(Ellipse_simulation_directory, f'frame_{iteration+1}.jpg'))
+                       
+        #Sofa.Gui.GUIManager.MainLoop(root) 
+        #Sofa.Gui.GUIManager.closeGUI()
+        
+    
+    
+    print("End of simulation.")
+    my_plotter()
+
+# Function used only if this script is called from a python environment
+if __name__ == '__main__':
+    main()
+    
+    
+    
